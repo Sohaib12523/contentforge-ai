@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import ZAI from 'z-ai-web-dev-sdk'
+import OpenAI from 'openai'
 
 const SYSTEM_PROMPT = `You are an expert social media content creator and copywriter. Your task is to transform given content into multiple platform-optimized posts.
 
@@ -51,6 +51,79 @@ Respond with a valid JSON object in this exact format:
 
 Important: Return ONLY valid JSON, no additional text or markdown.`
 
+async function generateWithOpenAI(content: string) {
+  const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+  })
+
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      {
+        role: 'system',
+        content: SYSTEM_PROMPT,
+      },
+      {
+        role: 'user',
+        content: `Transform this content into platform-optimized posts:\n\n${content}`,
+      },
+    ],
+    temperature: 0.7,
+    max_tokens: 2000,
+  })
+
+  return completion.choices[0]?.message?.content
+}
+
+async function generateWithZAI(content: string) {
+  // Dynamic import for z-ai-web-dev-sdk (only works in Z.ai sandbox)
+  const ZAI = (await import('z-ai-web-dev-sdk')).default
+  
+  const zai = await ZAI.create()
+
+  const completion = await zai.chat.completions.create({
+    messages: [
+      {
+        role: 'assistant',
+        content: SYSTEM_PROMPT,
+      },
+      {
+        role: 'user',
+        content: `Transform this content into platform-optimized posts:\n\n${content}`,
+      },
+    ],
+    thinking: { type: 'disabled' },
+  })
+
+  return completion.choices[0]?.message?.content
+}
+
+function parseGeneratedContent(responseText: string | null | undefined) {
+  if (!responseText) {
+    return null
+  }
+
+  try {
+    // Clean up the response - remove any markdown code blocks if present
+    let cleanedResponse = responseText.trim()
+    if (cleanedResponse.startsWith('```json')) {
+      cleanedResponse = cleanedResponse.slice(7)
+    }
+    if (cleanedResponse.startsWith('```')) {
+      cleanedResponse = cleanedResponse.slice(3)
+    }
+    if (cleanedResponse.endsWith('```')) {
+      cleanedResponse = cleanedResponse.slice(0, -3)
+    }
+
+    return JSON.parse(cleanedResponse.trim())
+  } catch (parseError) {
+    console.error('JSON Parse Error:', parseError)
+    console.error('Response text:', responseText)
+    return null
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -70,52 +143,40 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Initialize ZAI SDK
-    const zai = await ZAI.create()
+    let responseText: string | null | undefined
 
-    // Generate content using LLM
-    const completion = await zai.chat.completions.create({
-      messages: [
-        {
-          role: 'assistant',
-          content: SYSTEM_PROMPT
-        },
-        {
-          role: 'user',
-          content: `Transform this content into platform-optimized posts:\n\n${content}`
+    // Try ZAI SDK first (works in Z.ai sandbox)
+    // Then fall back to OpenAI (for external deployment like Netlify)
+    try {
+      console.log('Trying ZAI SDK for content generation')
+      responseText = await generateWithZAI(content)
+      console.log('ZAI SDK succeeded')
+    } catch (zaiError) {
+      console.log('ZAI SDK not available, trying OpenAI...')
+      
+      if (process.env.OPENAI_API_KEY) {
+        try {
+          responseText = await generateWithOpenAI(content)
+          console.log('OpenAI succeeded')
+        } catch (openaiError) {
+          console.error('OpenAI Error:', openaiError)
+          return NextResponse.json(
+            { error: 'OpenAI API error. Please check your API key and ensure your region is supported.' },
+            { status: 500 }
+          )
         }
-      ],
-      thinking: { type: 'disabled' }
-    })
-
-    const responseText = completion.choices[0]?.message?.content
-
-    if (!responseText) {
-      return NextResponse.json(
-        { error: 'Failed to generate content' },
-        { status: 500 }
-      )
+      } else {
+        console.error('ZAI SDK Error:', zaiError)
+        return NextResponse.json(
+          { error: 'AI service not available. For external deployment, please configure OPENAI_API_KEY environment variable.' },
+          { status: 500 }
+        )
+      }
     }
 
-    // Parse the JSON response
-    let generatedContent
-    try {
-      // Clean up the response - remove any markdown code blocks if present
-      let cleanedResponse = responseText.trim()
-      if (cleanedResponse.startsWith('```json')) {
-        cleanedResponse = cleanedResponse.slice(7)
-      }
-      if (cleanedResponse.startsWith('```')) {
-        cleanedResponse = cleanedResponse.slice(3)
-      }
-      if (cleanedResponse.endsWith('```')) {
-        cleanedResponse = cleanedResponse.slice(0, -3)
-      }
-      
-      generatedContent = JSON.parse(cleanedResponse.trim())
-    } catch (parseError) {
-      console.error('JSON Parse Error:', parseError)
-      console.error('Response text:', responseText)
+    const generatedContent = parseGeneratedContent(responseText)
+
+    if (!generatedContent) {
       return NextResponse.json(
         { error: 'Failed to parse generated content' },
         { status: 500 }
@@ -134,7 +195,6 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(generatedContent)
-
   } catch (error) {
     console.error('API Error:', error)
     return NextResponse.json(
