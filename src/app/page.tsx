@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { 
   Sparkles, 
   Twitter, 
@@ -16,7 +17,9 @@ import {
   Check, 
   Loader2,
   FileText,
-  ArrowRight
+  ArrowRight,
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -33,6 +36,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false)
   const [generatedContent, setGeneratedContent] = useState<GeneratedContent | null>(null)
   const [copiedSection, setCopiedSection] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   const handleGenerate = async () => {
     if (!content.trim()) {
@@ -42,26 +46,50 @@ export default function Home() {
 
     setIsLoading(true)
     setGeneratedContent(null)
+    setError(null)
 
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
+
       const response = await fetch('/api/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ content }),
+        signal: controller.signal,
       })
 
-      if (!response.ok) {
-        throw new Error('Failed to generate content')
-      }
+      clearTimeout(timeoutId)
 
       const data = await response.json()
+
+      if (!response.ok) {
+        // Show the actual error message from the API
+        const errorMessage = data.error || 'Failed to generate content'
+        setError(errorMessage)
+        toast.error(errorMessage)
+        return
+      }
+
       setGeneratedContent(data)
       toast.success('Content generated successfully!')
-    } catch (error) {
-      console.error('Error:', error)
-      toast.error('Failed to generate content. Please try again.')
+    } catch (err) {
+      console.error('Error:', err)
+      
+      let errorMessage = 'Failed to generate content. Please try again.'
+      
+      if (err instanceof Error) {
+        if (err.name === 'AbortError') {
+          errorMessage = 'Request timed out. Please try with shorter content.'
+        } else {
+          errorMessage = err.message || errorMessage
+        }
+      }
+      
+      setError(errorMessage)
+      toast.error(errorMessage)
     } finally {
       setIsLoading(false)
     }
@@ -73,7 +101,7 @@ export default function Home() {
       setCopiedSection(section)
       toast.success('Copied to clipboard!')
       setTimeout(() => setCopiedSection(null), 2000)
-    } catch (error) {
+    } catch (err) {
       toast.error('Failed to copy')
     }
   }
@@ -208,6 +236,31 @@ export default function Home() {
           </CardContent>
         </Card>
 
+        {/* Error Display */}
+        {error && !isLoading && (
+          <div className="max-w-3xl mx-auto mb-8">
+            <Alert variant="destructive" className="border-red-200 bg-red-50 dark:bg-red-950/20">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Error</AlertTitle>
+              <AlertDescription className="flex items-center justify-between">
+                <span>{error}</span>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => {
+                    setError(null)
+                    handleGenerate()
+                  }}
+                  className="ml-4"
+                >
+                  <RefreshCw className="w-3 h-3 mr-1" />
+                  Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          </div>
+        )}
+
         {/* Output Sections */}
         {(isLoading || generatedContent) && (
           <div className="space-y-6">
@@ -281,7 +334,7 @@ export default function Home() {
         )}
 
         {/* Empty State */}
-        {!isLoading && !generatedContent && (
+        {!isLoading && !generatedContent && !error && (
           <div className="text-center py-12">
             <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-r from-violet-100 to-fuchsia-100 dark:from-violet-900/30 dark:to-fuchsia-900/30 mb-4">
               <Sparkles className="w-8 h-8 text-violet-600 dark:text-violet-400" />
